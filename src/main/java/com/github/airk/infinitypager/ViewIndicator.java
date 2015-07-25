@@ -2,24 +2,30 @@ package com.github.airk.infinitypager;
 
 import android.content.Context;
 import android.support.v4.view.ViewPager;
-import android.support.v7.widget.LinearLayoutManager;
-import android.support.v7.widget.RecyclerView;
 import android.util.AttributeSet;
-import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.MotionEvent;
 import android.view.View;
-import android.view.ViewGroup;
+import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 
-import java.util.HashMap;
-
 /**
- * Created by kevin on 15/6/17.
+ * Created by kevin on 15/7/22.
  */
-public abstract class ViewIndicator extends LinearLayout {
-    private WrapRecyclerView indicatorContainer;
-    protected IndicatorAdapter indicatorAdapter;
+public abstract class ViewIndicator extends HorizontalScrollView implements ViewPager.OnPageChangeListener {
+    private InfinityViewPager mPager;
+    private InfinityPagerAdapter mPagerAdapter;
+    private IndicatorAdapter mIndicatorAdapter;
+    private Indicator mSelectedIndicator;
+    private LinearLayout mContainer;
+    private int mLastScrollX;
+    private int mLastPrimaryItem;
+
+    private class Indicator {
+        View view;
+        int position;
+        Indicator prev;
+    }
 
     public ViewIndicator(Context context) {
         this(context, null);
@@ -31,14 +37,15 @@ public abstract class ViewIndicator extends LinearLayout {
 
     public ViewIndicator(Context context, AttributeSet attrs, int defStyleAttr) {
         super(context, attrs, defStyleAttr);
-        indicatorContainer = new WrapRecyclerView(getContext());
-        indicatorContainer.setLayoutManager(new LinearLayoutManager(getContext(), LinearLayoutManager.HORIZONTAL, false));
-        LayoutParams lp = new LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT);
-        indicatorContainer.setLayoutParams(lp);
-        addView(indicatorContainer);
-
-        indicatorAdapter = getIndicatorAdapter();
+        setWillNotDraw(true);
+        setHorizontalScrollBarEnabled(false);
+        mIndicatorAdapter = getIndicatorAdapter();
+        mContainer = new LinearLayout(context);
+        mContainer.setOrientation(LinearLayout.HORIZONTAL);
+        addView(mContainer);
     }
+
+    protected abstract IndicatorAdapter getIndicatorAdapter();
 
     @Override
     public boolean onInterceptTouchEvent(MotionEvent ev) {
@@ -46,149 +53,124 @@ public abstract class ViewIndicator extends LinearLayout {
     }
 
     @Override
-    public boolean onTouchEvent(MotionEvent event) {
+    public boolean onTouchEvent(MotionEvent ev) {
         return true;
     }
 
-    protected abstract IndicatorAdapter getIndicatorAdapter();
-
-    public void setPager(ViewPager pager) {
-        if (indicatorAdapter == null) {
-            throw new IllegalArgumentException("IndicatorAdapter has not set yet. Please set it or just use other ViewIndicator like CircleIndicator and so on.");
-        }
-        setPager(pager, indicatorAdapter);
+    public void setPager(InfinityViewPager pager) {
+        mPager = pager;
+        mPagerAdapter = (InfinityPagerAdapter) pager.getAdapter();
+        initIndicatorViews();
     }
 
-    private void setPager(ViewPager pager, IndicatorAdapter indicatorAdapter) {
-        if (!(pager.getAdapter() instanceof InfinityPagerAdapter)) {
-            throw new IllegalArgumentException("Must be InfinityPagetAdapter!");
+    private void initIndicatorViews() {
+        int count = mPagerAdapter.getRealCount();
+        for (int i = 0; i < count; i++) {
+            View indicator = LayoutInflater.from(getContext())
+                    .inflate(mIndicatorAdapter.getIndicatorLayoutRes(), this, false);
+            mContainer.addView(indicator);
+            mIndicatorAdapter.initIndicator(indicator, i);
         }
-        InfinityPagerAdapter parentAdapter = (InfinityPagerAdapter) pager.getAdapter();
-        AdapterInternal adapterInternal = new AdapterInternal(indicatorContainer, pager, getContext(), parentAdapter, indicatorAdapter);
-        indicatorContainer.setAdapter(adapterInternal);
+        mPager.addOnPageChangeListener(this);
+        mSelectedIndicator = new Indicator();
+        int realPosition = getRealPosition(mPager.getCurrentItem());
+        scrollToChild(realPosition, 0);
+        setSelectedIndicator(mContainer.getChildAt(realPosition), realPosition);
     }
 
-    private static class AdapterInternal extends RecyclerView.Adapter<RecyclerView.ViewHolder> implements ViewPager.OnPageChangeListener {
-        private final IndicatorAdapter indicatorAdapter;
-        private final RecyclerView parent;
-        private final ViewPager pager;
-        private final Context context;
-        private final InfinityPagerAdapter adapter;
-        private HashMap<Integer, RecyclerView.ViewHolder> activeVH;
-        private int lastPrimaryPosition = -1;
+    private int getRealPosition(int position) {
+        return mPagerAdapter.getRealPosition(position);
+    }
 
-        private AdapterInternal(RecyclerView parent, ViewPager pager, Context context, InfinityPagerAdapter adapter, IndicatorAdapter indicatorAdapter) {
-            this.parent = parent;
-            this.pager = pager;
-            this.context = context;
-            this.adapter = adapter;
-            this.indicatorAdapter = indicatorAdapter;
-            this.pager.addOnPageChangeListener(this);
-            activeVH = new HashMap<>();
-        }
-
-        @Override
-        public RecyclerView.ViewHolder onCreateViewHolder(ViewGroup parent, int viewType) {
-            View view = LayoutInflater.from(context).inflate(indicatorAdapter.getIndicatorLayoutRes(), parent, false);
-            return new InnerHolder(view);
-        }
-
-        @Override
-        public void onBindViewHolder(RecyclerView.ViewHolder holder, int position) {
-            if (lastPrimaryPosition == -1)
-                lastPrimaryPosition = pager.getCurrentItem();
-            indicatorAdapter.initIndicator(holder.itemView, position);
-            if (position == pager.getCurrentItem()) {
-                indicatorAdapter.onSelected(holder.itemView, position, true);
+    private void setSelectedIndicator(View v, int position) {
+        if (mSelectedIndicator.view != v) {
+            if (mSelectedIndicator.view != null) {
+                mSelectedIndicator.prev = new Indicator();
+                mSelectedIndicator.prev.view = mSelectedIndicator.view;
+                mSelectedIndicator.prev.position = mSelectedIndicator.position;
             }
+            mSelectedIndicator.view = v;
+            mSelectedIndicator.position = position;
+            mIndicatorAdapter.onSelected(mSelectedIndicator.view, mSelectedIndicator.position, true);
+        }
+        if (mSelectedIndicator.prev != null) {
+            mIndicatorAdapter.onSelected(mSelectedIndicator.prev.view,
+                    mSelectedIndicator.prev.position, false);
+        }
+    }
+
+    private void scrollToChild(int position, int offset) {
+        View selected = mContainer.getChildAt(position);
+        int half = (getWidth() - selected.getWidth()) / 2;
+        View match = findViewByLeft(selected.getLeft() - half - selected.getWidth());
+        if (match == null)
+            return;
+
+        View target;
+        if (match == selected)
+            offset = 0;
+        int diff = selected.getLeft() - match.getLeft();
+        if (diff <= 0) {
+            target = selected;
+        } else if (diff < half) {
+            return;
+        } else {
+            target = match;
         }
 
-        @Override
-        public void onViewAttachedToWindow(RecyclerView.ViewHolder holder) {
-            int key = holder.getAdapterPosition();
-            activeVH.put(key, holder);
-        }
+        int newScrollX = target.getLeft() + offset;
 
-        @Override
-        public void onViewDetachedFromWindow(RecyclerView.ViewHolder holder) {
-            int key = holder.getAdapterPosition();
-            activeVH.remove(key);
+        if (newScrollX != mLastScrollX) {
+            mLastScrollX = newScrollX;
+            scrollTo(newScrollX, 0);
         }
+    }
 
-        @Override
-        public int getItemCount() {
-            return adapter.getRealCount();
+    private View findViewByLeft(int left) {
+        if (left < 0) {
+            left = 0;
         }
-
-        @Override
-        public void onPageScrolled(int position, float positionOffset, int positionOffsetPixels) {
-            int realPosition = adapter.getRealPosition(position);
-            boolean backward = lastPrimaryPosition > realPosition;
-            Log.d("TAG", "Last: " + lastPrimaryPosition + " Position: " + realPosition + " offset: " + positionOffset);
-            View current;
-            View next;
-            if (!backward) {
-                current = activeVH.get(realPosition) == null ? null : activeVH.get(realPosition).itemView;
-                next = activeVH.get(realPosition + 1) == null ? null : activeVH.get(realPosition + 1).itemView;
-            } else {
-                current = activeVH.get(lastPrimaryPosition) == null ? null : activeVH.get(lastPrimaryPosition).itemView;
-                next = activeVH.get(realPosition) == null ? null : activeVH.get(realPosition).itemView;
-            }
-            indicatorAdapter.onTranslate(current, next, backward ? 1f - positionOffset : positionOffset, !backward);
-        }
-
-        @Override
-        public void onPageSelected(int position) {
-            final int realPosition = adapter.getRealPosition(position);
-            if ((lastPrimaryPosition == 0 && realPosition == getItemCount() - 1) ||
-                    (lastPrimaryPosition == getItemCount() - 1 && realPosition == 0)) {
-                parent.scrollToPosition(realPosition);
-                RecyclerView.ViewHolder prev = activeVH.get(lastPrimaryPosition);
-                if (prev != null) {
-                    indicatorAdapter.onSelected(prev.itemView, lastPrimaryPosition, false);
+        int count = mContainer.getChildCount();
+        if (count > 0) {
+            for (int i = 0; i < count; i++) {
+                View child = mContainer.getChildAt(i);
+                int cLeft = child.getLeft();
+                if (cLeft >= left) {
+                    return child;
                 }
-                lastPrimaryPosition = realPosition;
-                pager.postDelayed(new Runnable() {
-                    @Override
-                    public void run() {
-                        onPageSelected(realPosition);
-                    }
-                }, 200);
-                return;
-            }
-            Log.d("TAG", "onPageSelected position: " + realPosition);
-            int newPrimary = realPosition;
-            int oldPrimary = lastPrimaryPosition;
-            RecyclerView.ViewHolder old = activeVH.get(oldPrimary);
-            RecyclerView.ViewHolder newp = activeVH.get(newPrimary);
-            if (old != null) {
-                indicatorAdapter.onSelected(old.itemView, oldPrimary, false);
-            }
-            if (newp != null) {
-                indicatorAdapter.onSelected(newp.itemView, newPrimary, true);
-            }
-
-            int firstVisibleAdapterPosition = parent.getChildAdapterPosition(parent.getChildAt(0));
-            int lastVisibleAdapterPosition = parent.getChildAdapterPosition(parent.getChildAt(parent.getChildCount() - 1));
-            boolean forward = realPosition - lastPrimaryPosition > 0;
-            lastPrimaryPosition = realPosition;
-
-            if (forward && realPosition - firstVisibleAdapterPosition > parent.getChildCount() / 2) {
-                parent.scrollToPosition(lastVisibleAdapterPosition + 1);
-            } else if (!forward && lastVisibleAdapterPosition - realPosition > parent.getChildCount() / 2) {
-                parent.scrollToPosition(firstVisibleAdapterPosition - 1);
             }
         }
-
-        @Override
-        public void onPageScrollStateChanged(int state) {
-        }
-
-        static class InnerHolder extends RecyclerView.ViewHolder {
-            public InnerHolder(View itemView) {
-                super(itemView);
-            }
-        }
+        return null;
     }
+
+    @Override
+    public void onPageScrolled(int position, float positionOffset, int positionOffsetPixels) {
+        int realPosition = getRealPosition(position);
+        boolean backward = mLastPrimaryItem > realPosition;
+
+        View current;
+        View next;
+        if (!backward) {
+            current = mContainer.getChildAt(realPosition);
+            next = mContainer.getChildAt(realPosition + 1);
+        } else {
+            current = mContainer.getChildAt(mLastPrimaryItem);
+            next = mContainer.getChildAt(realPosition);
+        }
+        mIndicatorAdapter.onTranslate(current, next, backward ? 1f - positionOffset : positionOffset, !backward);
+        int offset = (int) (positionOffset * mContainer.getChildAt(realPosition).getWidth());
+        scrollToChild(realPosition, offset);
+    }
+
+    @Override
+    public void onPageSelected(int position) {
+        mLastPrimaryItem = getRealPosition(position);
+        setSelectedIndicator(mContainer.getChildAt(mLastPrimaryItem), mLastPrimaryItem);
+    }
+
+    @Override
+    public void onPageScrollStateChanged(int state) {
+    }
+
 
 }
