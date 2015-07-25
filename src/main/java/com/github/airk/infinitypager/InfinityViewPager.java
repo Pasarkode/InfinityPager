@@ -1,6 +1,7 @@
 package com.github.airk.infinitypager;
 
 import android.content.Context;
+import android.support.v4.view.PagerAdapter;
 import android.support.v4.view.ViewPager;
 import android.util.AttributeSet;
 
@@ -14,6 +15,14 @@ public class InfinityViewPager extends ViewPager {
 
     public InfinityViewPager(Context context, AttributeSet attrs) {
         super(context, attrs);
+    }
+
+    @Override
+    public void setAdapter(PagerAdapter adapter) {
+        if (!(adapter instanceof InfinityPagerAdapter)) {
+            throw new IllegalArgumentException("Adapter must be InfinityPagerAdapter.");
+        }
+        super.setAdapter(adapter);
     }
 
     @Override
